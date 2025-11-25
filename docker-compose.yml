@@ -1,0 +1,56 @@
+---
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:13
+    container_name: prediction-postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: prediction_app
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d prediction_app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: prediction-redis
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api-gateway:
+    build: ./api_gateway
+    container_name: prediction-api
+    ports:
+      - "18080:80"
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/prediction_app
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=your-super-secret-key-change-in-production
+    volumes:
+      - ./api_gateway:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
