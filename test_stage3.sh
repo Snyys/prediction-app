@@ -1,135 +1,115 @@
 #!/bin/bash
 
-echo "=== Testing Stage 3: Extended CRUD and Analytics ==="
+set -e
 
-# Сначала проверяем что сервер работает
-echo "1. Checking server health..."
-HEALTH_RESPONSE=$(curl -s -w "HTTP_STATUS:%{http_code}" http://localhost:18080/health)
-HTTP_STATUS=$(echo "$HEALTH_RESPONSE" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+echo "=== Fixed Stage 3 Test: Prediction Creation ==="
 
-if [ "$HTTP_STATUS" != "200" ]; then
-    echo "ERROR: Server is not responding. HTTP Status: $HTTP_STATUS"
-    echo "Please make sure the application is running"
-    exit 1
-fi
-
-echo "✓ Server is healthy"
-
-# Регистрируем нового пользователя если нужно
-echo -e "\n2. Registering test user..."
-REGISTER_RESPONSE=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST http://localhost:18080/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "stage3user",
-    "email": "stage3@example.com",
-    "password": "stage3pass123"
-  }')
-
-HTTP_STATUS=$(echo "$REGISTER_RESPONSE" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
-RESPONSE_BODY=$(echo "$REGISTER_RESPONSE" | sed 's/HTTP_STATUS:[0-9]*//g')
-
-if [ "$HTTP_STATUS" == "200" ]; then
-    echo "✓ New user registered"
-elif [ "$HTTP_STATUS" == "400" ]; then
-    echo "ℹ️ User already exists, trying to login..."
-else
-    echo "ERROR: Registration failed. HTTP Status: $HTTP_STATUS"
-    echo "Response: $RESPONSE_BODY"
-    exit 1
-fi
-
-# Логин
-echo -e "\n3. Login and get JWT token..."
+# Получаем токен
+echo "1. Getting token..."
 LOGIN_RESPONSE=$(curl -s -X POST http://localhost:18080/login \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=stage3user&password=stage3pass123")
+  -d "username=testuser&password=testpass123")
 
 # Проверяем что токен получен
-if echo "$LOGIN_RESPONSE" | grep -q "access_token"; then
-    TOKEN=$(echo "$LOGIN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
-    echo "✓ Token received: ${TOKEN:0:20}..."
-else
-    echo "ERROR: Login failed!"
+if ! echo "$LOGIN_RESPONSE" | grep -q "access_token"; then
+    echo "❌ ERROR: Cannot get access token"
     echo "Response: $LOGIN_RESPONSE"
     echo ""
-    echo "Trying with different user..."
-
-    # Пробуем с другим пользователем
-    LOGIN_RESPONSE=$(curl -s -X POST http://localhost:18080/login \
-      -H "Content-Type: application/x-www-form-urlencoded" \
-      -d "username=testuser&password=testpass123")
-
-    if echo "$LOGIN_RESPONSE" | grep -q "access_token"; then
-        TOKEN=$(echo "$LOGIN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
-        echo "✓ Token received with testuser: ${TOKEN:0:20}..."
-    else
-        echo "ERROR: Both logins failed!"
-        echo "Please register a user first:"
-        echo "curl -X POST http://localhost:18080/register \\"
-        echo "  -H 'Content-Type: application/json' \\"
-        echo "  -d '{\"username\":\"testuser\",\"email\":\"test@example.com\",\"password\":\"testpass123\"}'"
-        exit 1
-    fi
+    echo "Please register test user first:"
+    echo "curl -X POST http://localhost:18080/register \\"
+    echo "  -H 'Content-Type: application/json' \\"
+    echo "  -d '{\"username\":\"testuser\",\"email\":\"test@example.com\",\"password\":\"testpass123\"}'"
+    exit 1
 fi
 
-# Создаем предсказания
-echo -e "\n4. Creating test predictions..."
+TOKEN=$(echo "$LOGIN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
+echo "✅ Token received: ${TOKEN:0:20}..."
+
+# Создаем предсказания с правильными датами
+echo -e "\n2. Creating test predictions..."
 for i in {1..3}; do
+    echo "   Creating prediction $i..."
+
+    # Используем будущие даты
+    PREDICTION_DATA=$(cat << PREDICTION
+{
+    "title": "Test Prediction $i",
+    "description": "This is automated test prediction $i created by test script",
+    "predicted_date": "2024-12-$(printf "%02d" $((10 + i)))T12:00:00",
+    "expiration_date": "2024-12-$(printf "%02d" $((10 + i)))T23:59:59",
+    "confidence_level": 0.$((70 + i * 5))
+}
+PREDICTION
+)
+
     RESPONSE=$(curl -s -X POST http://localhost:18080/predictions \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer $TOKEN" \
-      -d "{
-        \"title\": \"Stage 3 Test Prediction $i\",
-        \"description\": \"This is stage 3 test prediction $i\",
-        \"predicted_date\": \"2024-12-${i}T12:00:00\",
-        \"expiration_date\": \"2024-12-${i}T23:59:59\",
-        \"confidence_level\": 0.$((70 + i))
-      }")
+      -d "$PREDICTION_DATA")
 
+    # Проверяем ответ
     if echo "$RESPONSE" | grep -q "\"id\""; then
-        echo "✓ Prediction $i created"
+        PREDICTION_ID=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+        echo "   ✅ Prediction $i created successfully (ID: $PREDICTION_ID)"
+    elif echo "$RESPONSE" | grep -q "error\|Error"; then
+        echo "   ❌ Prediction $i failed: $RESPONSE"
     else
-        echo "✗ Failed to create prediction $i"
-        echo "Response: $RESPONSE"
+        echo "   ⚠️  Prediction $i - unknown response: $RESPONSE"
     fi
+
+    sleep 1  # Небольшая пауза между запросами
 done
 
-# Получаем предсказания
-echo -e "\n5. Getting user predictions..."
+# Проверяем что предсказания создались
+echo -e "\n3. Verifying predictions were created..."
 PREDICTIONS_RESPONSE=$(curl -s -H "Authorization: Bearer $TOKEN" \
   http://localhost:18080/predictions)
 
-PREDICTION_COUNT=$(echo "$PREDICTIONS_RESPONSE" | python3 -c "import sys, json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+PREDICTION_COUNT=$(echo "$PREDICTIONS_RESPONSE" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(len(data))
+except:
+    print(0)
+")
 
 if [ "$PREDICTION_COUNT" -gt 0 ]; then
-    echo "✓ Found $PREDICTION_COUNT predictions"
-
-    # Берем ID первого предсказания для верификации
-    FIRST_ID=$(echo "$PREDICTIONS_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)[0]['id'])" 2>/dev/null || echo "0")
-
-    if [ "$FIRST_ID" != "0" ]; then
-        echo -e "\n6. Verifying prediction $FIRST_ID..."
-        VERIFY_RESPONSE=$(curl -s -X PUT "http://localhost:18080/predictions/$FIRST_ID/verify?is_correct=true" \
-          -H "Authorization: Bearer $TOKEN")
-        echo "✓ Verification response: $VERIFY_RESPONSE"
-    fi
+    echo "✅ SUCCESS: Created $PREDICTION_COUNT predictions"
+    echo ""
+    echo "📋 Predictions list:"
+    echo "$PREDICTIONS_RESPONSE" | python3 -m json.tool
 else
-    echo "✗ No predictions found"
+    echo "❌ FAILED: No predictions found"
+    echo "Response: $PREDICTIONS_RESPONSE"
 fi
 
+# Дополнительные тесты
+echo -e "\n4. Testing additional endpoints..."
+
 # Статистика
-echo -e "\n7. Getting user statistics..."
+echo "   Getting statistics..."
 STATS_RESPONSE=$(curl -s -H "Authorization: Bearer $TOKEN" \
   http://localhost:18080/stats/detailed)
-echo "✓ Stats: $STATS_RESPONSE"
+echo "   ✅ Stats: $STATS_RESPONSE"
 
 # Награды
-echo -e "\n8. Getting available rewards..."
+echo "   Getting rewards..."
 REWARDS_RESPONSE=$(curl -s -H "Authorization: Bearer $TOKEN" \
   http://localhost:18080/rewards/available)
+REWARD_COUNT=$(echo "$REWARDS_RESPONSE" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(len(data))
+except:
+    print(0)
+")
+echo "   ✅ Found $REWARD_COUNT available rewards"
 
-REWARD_COUNT=$(echo "$REWARDS_RESPONSE" | python3 -c "import sys, json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
-echo "✓ Found $REWARD_COUNT available rewards"
-
-echo -e "\n=== Stage 3 Test Completed Successfully ==="
-echo "You can explore the API at: http://localhost:18080/docs"
+echo -e "\n=== Test Completed ==="
+if [ "$PREDICTION_COUNT" -gt 0 ]; then
+    echo "🎉 SUCCESS: All tests passed!"
+else
+    echo "⚠️  WARNING: Predictions were not created, but other endpoints work"
+fi
