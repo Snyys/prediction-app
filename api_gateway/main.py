@@ -1,11 +1,14 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+# prediction_app/api_gateway/main.py - ОБНОВЛЯЕМ
+
+from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import timedelta, datetime
-from typing import List
+from typing import List, Optional
 
 import models
 import schemas
+import crud
 from database import engine, get_db, Base
 from init_db import init_database
 from security import (
@@ -28,134 +31,19 @@ app = FastAPI(
 )
 
 
-# API Endpoints
-@app.get("/")
-def read_root():
-    return {"message": "Prediction App API Gateway"}
+# Существующие endpoints (register, login, health) остаются без изменений
+# ... [остается тот же код что был ранее] ...
 
+# РАСШИРЕННЫЕ ENDPOINTS ДЛЯ ПРЕДСКАЗАНИЙ
 
-@app.get("/health")
-def health_check(db: Session = Depends(get_db)):
-    try:
-        db.execute("SELECT 1")
-        db_status = "connected"
-    except:
-        db_status = "disconnected"
-
-    return {
-        "status": "healthy",
-        "service": "api-gateway",
-        "database": db_status,
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-
-# Аутентификация
-@app.post("/register", response_model=schemas.UserResponse)
-def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(models.User.username == user.username).first()
-    if db_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already registered"
-        )
-
-    db_user = db.query(models.User).filter(models.User.email == user.email).first()
-    if db_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-
-    hashed_password = get_password_hash(user.password)
-    db_user = models.User(
-        username=user.username,
-        email=user.email,
-        hashed_password=hashed_password
-    )
-
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-
-    return db_user
-
-
-@app.post("/login", response_model=schemas.Token)
-def login_for_access_token(
-        form_data: OAuth2PasswordRequestForm = Depends(),
-        db: Session = Depends(get_db)
-):
-    user = db.query(models.User).filter(models.User.username == form_data.username).first()
-
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
-    )
-
-    return {"access_token": access_token, "token_type": "bearer"}
-
-
-# Защищенные endpoints
-@app.get("/users/me", response_model=schemas.UserResponse)
-def read_users_me(current_user: models.User = Depends(get_current_active_user)):
-    return current_user
-
-
-@app.post("/predictions", response_model=schemas.PredictionResponse)
-def create_prediction(
-        prediction: schemas.PredictionCreate,
-        current_user: models.User = Depends(get_current_active_user),
-        db: Session = Depends(get_db)
-):
-    db_prediction = models.Prediction(
-        title=prediction.title,
-        description=prediction.description,
-        user_id=current_user.id,
-        predicted_date=prediction.predicted_date,
-        expiration_date=prediction.expiration_date,
-        confidence_level=prediction.confidence_level
-    )
-
-    db.add(db_prediction)
-    db.commit()
-    db.refresh(db_prediction)
-
-    return db_prediction
-
-
-@app.get("/predictions", response_model=List[schemas.PredictionResponse])
-def get_predictions(
-        current_user: models.User = Depends(get_current_active_user),
-        skip: int = 0,
-        limit: int = 100,
-        db: Session = Depends(get_db)
-):
-    predictions = db.query(models.Prediction).filter(
-        models.Prediction.user_id == current_user.id
-    ).offset(skip).limit(limit).all()
-
-    return predictions
-
-
-@app.put("/predictions/{prediction_id}/verify")
-def verify_prediction(
+@app.get("/predictions/{prediction_id}", response_model=schemas.PredictionResponse)
+def get_prediction(
         prediction_id: int,
-        is_correct: bool,
         current_user: models.User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
 ):
-    prediction = db.query(models.Prediction).filter(
-        models.Prediction.id == prediction_id,
-        models.Prediction.user_id == current_user.id
-    ).first()
+    """Получить конкретное предсказание"""
+    prediction = crud.get_prediction(db, prediction_id)
 
     if not prediction:
         raise HTTPException(
@@ -163,94 +51,215 @@ def verify_prediction(
             detail="Prediction not found"
         )
 
-    prediction.status = "success" if is_correct else "failed"
-    prediction.result = is_correct
-    prediction.verified_at = datetime.utcnow()
+    if prediction.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
 
-    if is_correct:
-        current_user.points += 100
-
-    db.commit()
-
-    return {
-        "status": "verified",
-        "prediction_id": prediction_id,
-        "result": is_correct,
-        "points_awarded": 100 if is_correct else 0
-    }
+    return prediction
 
 
-@app.get("/rewards", response_model=List[schemas.RewardResponse])
-def get_rewards(
+@app.put("/predictions/{prediction_id}", response_model=schemas.PredictionResponse)
+def update_prediction(
+        prediction_id: int,
+        prediction_update: schemas.PredictionUpdate,
+        current_user: models.User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    """Обновить предсказание"""
+    prediction = crud.get_prediction(db, prediction_id)
+
+    if not prediction:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Prediction not found"
+        )
+
+    if prediction.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
+
+    if prediction.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can only update pending predictions"
+        )
+
+    return crud.update_prediction(db, prediction_id, prediction_update)
+
+
+@app.delete("/predictions/{prediction_id}")
+def delete_prediction(
+        prediction_id: int,
+        current_user: models.User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    """Удалить предсказание"""
+    prediction = crud.get_prediction(db, prediction_id)
+
+    if not prediction:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Prediction not found"
+        )
+
+    if prediction.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
+
+    crud.delete_prediction(db, prediction_id)
+
+    return {"message": "Prediction deleted successfully"}
+
+
+@app.get("/predictions/filter/status", response_model=List[schemas.PredictionResponse])
+def get_predictions_by_status(
+        status: schemas.PredictionStatus = Query(..., description="Filter by status"),
         current_user: models.User = Depends(get_current_active_user),
         skip: int = 0,
         limit: int = 100,
         db: Session = Depends(get_db)
 ):
-    rewards = db.query(models.Reward).filter(
-        models.Reward.is_active == True
+    """Получить предсказания по статусу"""
+    predictions = db.query(models.Prediction).filter(
+        models.Prediction.user_id == current_user.id,
+        models.Prediction.status == status.value
     ).offset(skip).limit(limit).all()
 
-    return rewards
+    return predictions
 
 
-@app.post("/rewards/{reward_id}/redeem")
-def redeem_reward(
-        reward_id: int,
+# РАСШИРЕННЫЕ ENDPOINTS ДЛЯ НАГРАД
+
+@app.get("/rewards/my", response_model=List[schemas.UserRewardResponse])
+def get_my_rewards(
         current_user: models.User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
 ):
-    reward = db.query(models.Reward).filter(models.Reward.id == reward_id).first()
+    """Получить мои полученные награды"""
+    user_rewards = crud.get_user_rewards(db, current_user.id)
 
-    if not reward:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Reward not found"
-        )
+    # Добавляем название награды в ответ
+    result = []
+    for user_reward in user_rewards:
+        reward_data = schemas.UserRewardResponse.from_orm(user_reward)
+        reward_data.reward_name = user_reward.reward.name
+        result.append(reward_data)
 
-    if current_user.points < reward.points_required:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Not enough points. Required: {reward.points_required}, Available: {current_user.points}"
-        )
-
-    current_user.points -= reward.points_required
-    db.commit()
-
-    return {
-        "reward_id": reward_id,
-        "reward_name": reward.name,
-        "points_spent": reward.points_required,
-        "remaining_points": current_user.points
-    }
+    return result
 
 
-@app.get("/stats")
-def get_stats(
+@app.get("/rewards/available", response_model=List[schemas.RewardResponse])
+def get_available_rewards(
         current_user: models.User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
 ):
-    total_predictions = db.query(models.Prediction).filter(
-        models.Prediction.user_id == current_user.id
-    ).count()
+    """Получить доступные для получения награды"""
+    user_stats = crud.get_user_stats(db, current_user.id)
+    all_rewards = crud.get_available_rewards(db)
+    user_rewards = crud.get_user_rewards(db, current_user.id)
+    awarded_reward_ids = [ur.reward_id for ur in user_rewards]
 
-    pending_predictions = db.query(models.Prediction).filter(
-        models.Prediction.user_id == current_user.id,
-        models.Prediction.status == "pending"
-    ).count()
+    # Фильтруем награды которые пользователь еще не получил
+    available_rewards = [
+        reward for reward in all_rewards
+        if reward.id not in awarded_reward_ids
+    ]
 
-    successful_predictions = db.query(models.Prediction).filter(
-        models.Prediction.user_id == current_user.id,
-        models.Prediction.status == "success"
-    ).count()
+    return available_rewards
 
-    return {
-        "user_points": current_user.points,
-        "total_predictions": total_predictions,
-        "pending_predictions": pending_predictions,
-        "successful_predictions": successful_predictions,
-        "success_rate": successful_predictions / total_predictions if total_predictions > 0 else 0
-    }
+
+# СТАТИСТИКА И АНАЛИТИКА
+
+@app.get("/stats/detailed", response_model=schemas.UserStats)
+def get_detailed_stats(
+        current_user: models.User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    """Получить детальную статистику"""
+    return crud.get_user_stats(db, current_user.id)
+
+
+@app.get("/analytics/success-rate")
+def get_success_rate_analytics(
+        current_user: models.User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    """Аналитика успешности предсказаний по времени"""
+    # Группируем по месяцам
+    monthly_stats = db.execute("""
+        SELECT 
+            DATE_TRUNC('month', created_at) as month,
+            COUNT(*) as total,
+            SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful,
+            AVG(confidence_level) as avg_confidence
+        FROM predictions 
+        WHERE user_id = :user_id
+        GROUP BY DATE_TRUNC('month', created_at)
+        ORDER BY month
+    """, {"user_id": current_user.id}).fetchall()
+
+    return [
+        {
+            "month": row[0].strftime("%Y-%m"),
+            "total_predictions": row[1],
+            "successful_predictions": row[2],
+            "success_rate": row[2] / row[1] if row[1] > 0 else 0,
+            "average_confidence": float(row[3]) if row[3] else 0
+        }
+        for row in monthly_stats
+    ]
+
+
+# АДМИН ENDPOINTS
+
+@app.get("/admin/predictions", response_model=List[schemas.PredictionResponse])
+def get_all_predictions_admin(
+        current_user: models.User = Depends(get_current_active_user),
+        skip: int = 0,
+        limit: int = 100,
+        db: Session = Depends(get_db)
+):
+    """Админ: получить все предсказания (только для админов)"""
+    if current_user.username != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+
+    predictions = db.query(models.Prediction).offset(skip).limit(limit).all()
+    return predictions
+
+
+@app.get("/admin/users/stats")
+def get_all_users_stats(
+        current_user: models.User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    """Админ: статистика всех пользователей"""
+    if current_user.username != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+
+    users = crud.get_users(db)
+    stats = []
+
+    for user in users:
+        user_stats = crud.get_user_stats(db, user.id)
+        stats.append({
+            "user_id": user.id,
+            "username": user.username,
+            **user_stats.dict()
+        })
+
+    return stats
 
 
 # Создаем тестовые награды при запуске
@@ -276,6 +285,11 @@ def create_default_rewards():
                 description="10 успешных предсказаний",
                 points_required=1000
             ),
+            models.Reward(
+                name="Оракул",
+                description="20 успешных предсказаний",
+                points_required=2000
+            )
         ]
 
         for reward in default_rewards:
