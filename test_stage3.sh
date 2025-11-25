@@ -2,7 +2,7 @@
 
 set -e
 
-echo "=== Fixed Stage 3 Test: Prediction Creation ==="
+echo "=== Fixed Stage 3 Test: Proper Date Format ==="
 
 # Получаем токен
 echo "1. Getting token..."
@@ -25,22 +25,26 @@ fi
 TOKEN=$(echo "$LOGIN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
 echo "✅ Token received: ${TOKEN:0:20}..."
 
-# Создаем предсказания с правильными датами
-echo -e "\n2. Creating test predictions..."
+# Создаем предсказания с ПРАВИЛЬНЫМ форматом дат
+echo -e "\n2. Creating test predictions with correct date format..."
 for i in {1..3}; do
     echo "   Creating prediction $i..."
 
-    # Используем будущие даты
+    # Используем ДВУЗНАЧНЫЕ числа для дней
+    day=$(printf "%02d" $((10 + i)))
+
     PREDICTION_DATA=$(cat << PREDICTION
 {
     "title": "Test Prediction $i",
     "description": "This is automated test prediction $i created by test script",
-    "predicted_date": "2024-12-$(printf "%02d" $((10 + i)))T12:00:00",
-    "expiration_date": "2024-12-$(printf "%02d" $((10 + i)))T23:59:59",
+    "predicted_date": "2024-12-${day}T12:00:00",
+    "expiration_date": "2024-12-${day}T23:59:59",
     "confidence_level": 0.$((70 + i * 5))
 }
 PREDICTION
 )
+
+    echo "   Data: $PREDICTION_DATA"
 
     RESPONSE=$(curl -s -X POST http://localhost:18080/predictions \
       -H "Content-Type: application/json" \
@@ -76,12 +80,22 @@ except:
 
 if [ "$PREDICTION_COUNT" -gt 0 ]; then
     echo "✅ SUCCESS: Created $PREDICTION_COUNT predictions"
+
+    # Показываем ID созданных предсказаний
     echo ""
-    echo "📋 Predictions list:"
-    echo "$PREDICTIONS_RESPONSE" | python3 -m json.tool
+    echo "📋 Created prediction IDs:"
+    echo "$PREDICTIONS_RESPONSE" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for pred in data:
+        print(f'   - ID: {pred[\"id\"]}, Title: {pred[\"title\"]}, Status: {pred[\"status\"]}')
+except Exception as e:
+    print(f'   Error parsing: {e}')
+"
 else
     echo "❌ FAILED: No predictions found"
-    echo "Response: $PREDICTIONS_RESPONSE"
+    echo "Raw response: $PREDICTIONS_RESPONSE"
 fi
 
 # Дополнительные тесты
@@ -110,6 +124,8 @@ echo "   ✅ Found $REWARD_COUNT available rewards"
 echo -e "\n=== Test Completed ==="
 if [ "$PREDICTION_COUNT" -gt 0 ]; then
     echo "🎉 SUCCESS: All tests passed!"
+    echo "   Predictions successfully created and stored in database"
 else
-    echo "⚠️  WARNING: Predictions were not created, but other endpoints work"
+    echo "⚠️  WARNING: Predictions were not created"
+    echo "   Let's try manual creation to debug..."
 fi
