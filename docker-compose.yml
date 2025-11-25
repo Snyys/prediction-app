@@ -1,56 +1,85 @@
+# docker-compose.yml
 ---
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:13
-    container_name: prediction-postgres
-    environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: prediction_app
+  nginx:
+    image: nginx:alpine
     ports:
-      - "15432:5432"
+      - "80:80"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d prediction_app"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - api_gateway
+    networks:
+      - prediction_network
 
-  redis:
-    image: redis:7-alpine
-    container_name: prediction-redis
-    ports:
-      - "16379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  api-gateway:
+  api_gateway:
     build: ./api_gateway
-    container_name: prediction-api
     ports:
-      - "18080:80"
+      - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://user:password@postgres:5432/prediction_app
-      - REDIS_URL=redis://redis:6379/0
-      - SECRET_KEY=your-super-secret-key-change-in-production
-    volumes:
-      - ./api_gateway:/app
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - postgres
+      - redis
+    networks:
+      - prediction_network
+
+  auth_service:
+    build: ./auth_service
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/prediction_app
+      - JWT_SECRET=your_jwt_secret
+    networks:
+      - prediction_network
+
+  prediction_service:
+    build: ./prediction_service
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/prediction_app
+    depends_on:
+      - redis
+    networks:
+      - prediction_network
+
+  reward_service:
+    build: ./reward_service
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/prediction_app
+    networks:
+      - prediction_network
+
+  worker:
+    build: ./prediction_service
+    command: python -m prediction_service.tasks
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/prediction_app
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - prediction_network
+
+  postgres:
+    image: postgres:13
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=prediction_app
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - prediction_network
+
+  redis:
+    image: redis:alpine
+    networks:
+      - prediction_network
 
 volumes:
   postgres_data:
+
+networks:
+  prediction_network:
+    driver: bridge
