@@ -2,12 +2,14 @@
 
 set -e
 
-echo "=== Smart Stage 3 Test: Auto User Registration ==="
+echo "=== Smart Stage 3 Test ==="
+
+BASE_URL="http://localhost:18080"
 
 # Функция для регистрации пользователя
 register_user() {
     echo "👤 Registering test user..."
-    RESPONSE=$(curl -s -X POST http://localhost:18080/register \
+    RESPONSE=$(curl -s -X POST "$BASE_URL/register" \
       -H "Content-Type: application/json" \
       -d '{
         "username": "autotest",
@@ -15,10 +17,12 @@ register_user() {
         "password": "autopass123"
     }')
 
+    echo "Registration response: $RESPONSE"
+
     if echo "$RESPONSE" | grep -q "\"id\""; then
         echo "✅ User registered successfully"
         return 0
-    elif echo "$RESPONSE" | grep -q "already registered"; then
+    elif echo "$RESPONSE" | grep -q "already"; then
         echo "ℹ️ User already exists, continuing..."
         return 0
     else
@@ -33,9 +37,11 @@ get_token() {
     local password=$2
 
     echo "🔑 Getting token for $username..."
-    RESPONSE=$(curl -s -X POST http://localhost:18080/login \
+    RESPONSE=$(curl -s -X POST "$BASE_URL/token" \
       -H "Content-Type: application/x-www-form-urlencoded" \
       -d "username=$username&password=$password")
+
+    echo "Login response: $RESPONSE"
 
     if echo "$RESPONSE" | grep -q "access_token"; then
         TOKEN=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
