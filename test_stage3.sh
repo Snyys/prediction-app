@@ -31,13 +31,13 @@ register_user() {
     fi
 }
 
-# Функция для получения токена
+# Функция для получения токена - ИСПРАВЛЕННЫЙ ЭНДПОИНТ
 get_token() {
     local username=$1
     local password=$2
 
     echo "🔑 Getting token for $username..."
-    RESPONSE=$(curl -s -X POST "$BASE_URL/token" \
+    RESPONSE=$(curl -s -X POST "$BASE_URL/login" \
       -H "Content-Type: application/x-www-form-urlencoded" \
       -d "username=$username&password=$password")
 
@@ -56,30 +56,24 @@ get_token() {
 # Основная логика
 echo "1. Setting up test user..."
 
-# Пробуем сначала с testuser
-if get_token "testuser" "testpass123"; then
-    echo "✅ Using existing testuser"
-else
-    # Если testuser не работает, регистрируем нового
-    if register_user; then
-        if get_token "autotest" "autopass123"; then
-            echo "✅ Using newly registered autotest"
-        else
-            echo "❌ Cannot get token even after registration"
-            exit 1
-        fi
+# Сначала попробуем зарегистрировать нового пользователя
+if register_user; then
+    if get_token "autotest" "autopass123"; then
+        echo "✅ Using newly registered autotest"
     else
-        echo "❌ Cannot register user"
+        echo "❌ Cannot get token even after registration"
         exit 1
     fi
+else
+    echo "❌ Cannot register user"
+    exit 1
 fi
 
-# Создаем предсказания с правильным форматом дат
+# Теперь создаем предсказания
 echo -e "\n2. Creating test predictions..."
 for i in {1..3}; do
     echo "   Creating prediction $i..."
 
-    # Используем двузначные числа для дней
     day=$(printf "%02d" $((10 + i)))
 
     PREDICTION_DATA='{
@@ -90,7 +84,7 @@ for i in {1..3}; do
     "confidence_level": 0.'$((75 + i * 2))'
 }'
 
-    RESPONSE=$(curl -s -X POST http://localhost:18080/predictions \
+    RESPONSE=$(curl -s -X POST "$BASE_URL/predictions" \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer $TOKEN" \
       -d "$PREDICTION_DATA")
@@ -109,7 +103,7 @@ done
 # Проверяем созданные предсказания
 echo -e "\n3. Verifying predictions..."
 PREDICTIONS_RESPONSE=$(curl -s -H "Authorization: Bearer $TOKEN" \
-  http://localhost:18080/predictions)
+  "$BASE_URL/predictions")
 
 PREDICTION_COUNT=$(echo "$PREDICTIONS_RESPONSE" | python3 -c "
 import sys, json
@@ -123,7 +117,6 @@ except:
 if [ "$PREDICTION_COUNT" -gt 0 ]; then
     echo "✅ SUCCESS: Found $PREDICTION_COUNT predictions"
 
-    # Показываем детали
     echo ""
     echo "📋 Prediction details:"
     echo "$PREDICTIONS_RESPONSE" | python3 -c "
@@ -146,13 +139,13 @@ echo -e "\n4. Testing additional features..."
 # Статистика
 echo "   Getting statistics..."
 STATS_RESPONSE=$(curl -s -H "Authorization: Bearer $TOKEN" \
-  http://localhost:18080/stats/detailed)
+  "$BASE_URL/stats/detailed")
 echo "   📊 Stats: $STATS_RESPONSE"
 
 # Награды
 echo "   Getting rewards..."
 REWARDS_COUNT=$(curl -s -H "Authorization: Bearer $TOKEN" \
-  http://localhost:18080/rewards/available | python3 -c "
+  "$BASE_URL/rewards/available" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
